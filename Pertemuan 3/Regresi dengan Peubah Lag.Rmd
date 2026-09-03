@@ -1,0 +1,367 @@
+---
+title: "Pertemuan 3: Regresi dengan Peubah Lag"
+author: "Muhammad Khayruhanif"
+output:
+  html_document:
+    theme: yeti
+    toc: true
+    toc_float: true
+  word_document: default
+  pdf_document: default
+---
+
+```{=html}
+<style>
+h1, h2, h3, h4, h5, h6 {
+  font-weight: bold !important;
+}
+</style>
+```
+
+## Pengantar
+
+Dalam pemodelan deret waktu, sering kali efek dari suatu kejadian (variabel X) terhadap target observasi (variabel Y) tidak terjadi secara instan, melainkan membutuhkan jeda waktu atau **Lag**.
+
+Secara umum, terdapat tiga pendekatan utama untuk memodelkan efek jeda waktu ini:
+
+1\. **Distributed Lag Model (DLM):** Variabel dependen (Y) dipengaruhi oleh variabel independen saat ini dan masa lalu ($X_t, X_{t-1}, X_{t-2}$, dst).
+
+2\. **Autoregressive Model (AR):** Variabel dependen (Y) dipengaruhi oleh variabel independen saat ini ($X_t$) dan nilai dirinya sendiri di masa lalu ($Y_{t-1}, Y_{t-2}$, dst).
+
+3\. **Autoregressive Distributed Lag (ARDL):** Model gabungan di mana Y dipengaruhi oleh X saat ini, X masa lalu, dan Y masa lalu.
+
+------------------------------------------------------------------------
+
+## 1. Persiapan Data
+
+### *Packages*
+
+```{r setup, message=FALSE, warning=FALSE}
+# Mengaktifkan library yang dibutuhkan
+# install.packages(c("dLagM", "dynlm", "MLmetrics", "lmtest", "car")) # Run jika belum meng-install
+
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+### Impor & Pembagian Data
+
+Kita akan menggunakan data simulasi untuk melatih pemodelan. Data dibagi menjadi data Training (untuk membentuk model) dan data Testing (untuk menguji akurasi ramalan).
+
+```{r}
+# Impor Data
+data <- rio::import("https://raw.githubusercontent.com/rizkynurhambali/praktikum-sta1341/main/Pertemuan%203/Data%20Asli.csv")
+
+# Membagi data (15 observasi pertama untuk training, 5 observasi terakhir untuk testing)
+train <- data[1:15,]
+test <- data[16:20,]
+
+# Mengubah format data menjadi objek Time Series (ts)
+train.ts <- ts(train)
+test.ts <- ts(test)
+data.ts <- ts(data)
+```
+
+## 2. Model Koyck
+
+Model Koyck mengatasi masalah infinite distributed lag (pengaruh masa lalu yang tak terhingga) dengan mengasumsikan bahwa semakin jauh jarak lag, semakin kecil pengaruhnya.
+
+Melalui transformasi aljabar, efek masa lalu dari X yang sangat panjang diringkas ke dalam satu variabel saja, yaitu $Y_{t-1}$. Bentuk persamaannya menjadi:
+
+$$Y_t=a(1-\lambda)+\beta_0X_t+\lambda Y_{t-1}+V_t$$ Catatan: $V_t$ adalah error term gabungan. Pada hasil ringkasan model (estimasi), $V_t$ tidak ditampilkan karena nilai harapannya diasumsikan nol.
+
+### Pemodelan
+
+Pemodelan ini menggunakan fungsi `koyckDlm()`.
+
+```{r}
+# Membangun Model Koyck
+model.koyck <- koyckDlm(x = train$Xt, y = train$Yt)
+summary(model.koyck)
+```
+
+**Interpretasi:** Jika *P-value* dari peubah $X_t$ dan $Y_{t-1}$ $< 0.05$, artinya kedua peubah tersebut berpengaruh signifikan terhadap $Y_t$. Koefisien pada $Y_{t-1}$ mewakili parameter $\lambda$ (tingkat penurunan pengaruh).
+
+**Persamaan:**
+
+$$\hat{Y_t}=-3.7335+1.1510X_t+0.4214Y_{t-1}$$
+
+### Peramalan
+
+```{r}
+# Meramalkan 5 periode ke depan
+fore.koyck <- forecast(model = model.koyck, x = test$Xt, h = 5)
+fore.koyck
+
+# Cek Akurasi (MAPE) pada data testing
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Yt)
+cat("MAPE Model Koyck:", mape.koyck, "\n")
+```
+
+## 3. Regression with Distributed Lag (DLM)
+
+Berbeda dengan Koyck, pemodelan DLM membatasi secara spesifik berapa periode memori masa lalu yang dilibatkan. Batasan ini direpresentasikan dengan parameter $q$.
+
+\$\$Y_t=\\alpha+\\beta_0X_t+\\beta_1X\_{t-1}+...+\\beta_qX\_{t-q}+e_t\$\$
+
+### Pemodelan (Lag = 2)
+
+Fungsi yang digunakan adalah `dlm()`. Parameter `q = 2` berarti kita memasukkan $X_t, X_{t-1}$, dan $X_{t-2}$.
+
+```{r}
+model.dlm <- dlm(x = train$Xt, y = train$Yt, q = 2)
+summary(model.dlm)
+```
+
+### Penentuan *Lag* Optimum
+
+Untuk menghindari coba-coba, kita bisa mencari nilai $q$ terbaik berdasarkan nilai *Akaike Information Criterion (AIC)* terkecil menggunakan fungsi `finiteDLMauto()`.
+
+```{r}
+finiteDLMauto(formula = Yt ~ Xt,
+              data = data.frame(train), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+**Interpretasi:** Pilih baris dengan nilai AIC yang paling kecil (negatif terbesar). Misalnya, lag optimum berada pada $q=6$, kita bangun ulang modelnya:
+
+```{r}
+# Membangun ulang DLM dengan Lag Optimum (q=6)
+model.dlm.opt <- dlm(x = train$Xt, y = train$Yt, q = 6)
+summary(model.dlm.opt)
+
+# Peramalan model DLM Optimum
+fore.dlm.opt <- forecast(model = model.dlm.opt, x = test$Xt, h = 5)
+mape.dlm.opt <- MAPE(fore.dlm.opt$forecasts, test$Yt)
+cat("MAPE Model DLM Optimum:", mape.dlm.opt, "\n")
+```
+
+## 4. Autoregressive Distributed Lag (ARDL)
+
+Model ARDL menggabungkan pengaruh dari peubah independen masa lalu dan peubah dependen masa lalu.
+
+**Perhatian Notasi:**
+
+Pada *package* `dLagM` (khusus fungsi `ardlDlm`), aturannya adalah:
+
+- $p$ = panjang *lag* peubah independen ($X$).
+
+- $q$ = panjang *lag* peubah dependen ($Y$).
+
+### Pemodelan
+
+```{r}
+# Model ARDL dengan lag X = 1 dan lag Y = 1
+model.ardl <- ardlDlm(formula = Yt ~ Xt, data = train, p = 1, q = 1)
+summary(model.ardl)
+```
+
+### *Lag* Optimum ARDL
+
+Kita bisa mencari kombinasi $p$ dan $q$ terbaik dengan fungsi `ardlBoundOrders()`.
+
+```{r}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(data), ic = "AIC", formula = Yt ~ Xt)
+
+# Menarik kombinasi lag dengan AIC terkecil
+min_p <- c()
+for(i in 1:6){
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]])
+}
+q_opt <- which(min_p == min(min_p, na.rm = TRUE))
+p_opt <- which(model.ardl.opt$Stat.table[[q_opt]] == min(model.ardl.opt$Stat.table[[q_opt]], na.rm = TRUE))
+
+data.frame("Lag_Y_opt(q)" = q_opt, "Lag_X_opt(p)" = p_opt, "AIC" = model.ardl.opt$min.Stat)
+```
+
+```{r}
+# Peramalan ARDL awal (p=1, q=1)
+fore.ardl <- forecast(model = model.ardl, x = test$Xt, h = 5)
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+cat("MAPE Model ARDL (1,1):", mape.ardl, "\n")
+```
+
+## 5. Pendekatan dengan Library `dynlm` dan Uji Asumsi
+
+Pemodelan juga dapat dilakukan secara manual menggunakan library `dynlm`. Keunggulannya adalah kemudahan dalam memanggil fungsi uji asumsi sisaan (karena format outputnya setara dengan regresi linier standar `lm`).
+
+Gunakan fungsi `L()` untuk memanggil nilai masa lalu (*lag*).
+
+```{r}
+# Sama dengan DLM (q=1)
+cons_lm1 <- dynlm(Yt ~ Xt + L(Xt), data = train.ts)
+
+# Setara dengan Model Autoregressive Murni (Hanya melibatkan Xt dan Yt-1)
+cons_lm2 <- dynlm(Yt ~ Xt + L(Yt), data = train.ts)
+
+# Sama dengan ARDL (p=1, q=1)
+cons_lm3 <- dynlm(Yt ~ Xt + L(Xt) + L(Yt), data = train.ts)
+```
+
+### Uji Asumsi Model (Contoh pada cons_lm1)
+
+### 1. Uji Autokorelasi (Durbin-Watson)
+
+H0: Tidak ada autokorelasi
+
+```{r}
+dwtest(cons_lm1)
+```
+
+### 2. Uji Heteroskedastisitas (Breusch-Pagan)
+
+H0: Ragam sisaan homogen
+
+```{r}
+bptest(cons_lm1)
+```
+
+### 3. Uji Normalitas (Shapiro-Wilk)
+
+H0: Sisaan berdistribusi normal
+
+```{r}
+shapiro.test(residuals(cons_lm1))
+```
+
+(Catatan: Tolak H0 jika P-Value \< 0.05)
+
+## 6. Perbandingan Performa Model
+
+Mari kita bandingkan akurasi peramalan berdasarkan MAPE dan memvisualisasikannya.
+
+### Akurasi
+
+```{r}
+# Ringkasan Akurasi
+akurasi <- matrix(c(mape.koyck, mape.dlm.opt, mape.ardl))
+row.names(akurasi) <- c("Koyck", "DLM Optimum", "ARDL (1,1)")
+colnames(akurasi) <- c("MAPE")
+print(akurasi)
+```
+
+### Visualisasi Aktual vs Peramalan
+
+```{r}
+par(mfrow=c(1,1))
+plot(test$Xt, test$Yt, type="b", col="black", ylim=c(120,250), lwd=2, 
+     ylab="Nilai Y", xlab="Nilai X", main="Perbandingan Model Peramalan")
+
+lines(test$Xt, fore.koyck$forecasts, col="red", type="b", pch=16)
+lines(test$Xt, fore.dlm.opt$forecasts, col="blue", type="b", pch=17)
+lines(test$Xt, fore.ardl$forecasts, col="green", type="b", pch=18)
+
+legend("topleft", legend=c("Aktual", "Koyck", "DLM Optimum", "ARDL (1,1)"),
+       col=c("black","red","blue","green"), lty=1, pch=c(1,16,17,18), cex=0.8, inset=0.02)
+```
+
+## 7. Pengayaan: Regresi Berganda dengan Lag
+
+Pada praktiknya di dunia nyata, suatu target peramalan (Y) jarang sekali hanya dipengaruhi oleh satu faktor tunggal. Konsep DLM dan ARDL yang sudah kita pelajari dapat diperluas untuk lebih dari satu peubah independen (*Multiple Regression*).
+
+### A. Pengenalan Data
+
+Sebagai contoh, kita akan menggunakan dataset makroekonomi bawaan dari R yaitu `M1Germany`.
+
+- **Y (`logprice`):** Logaritma dari indeks harga (inflasi).
+
+- **X1 (`interest`):** Tingkat suku bunga.
+
+- **X2 (`logm1`):** Logaritma dari suplai uang.
+
+Kita ingin melihat bagaimana kebijakan suku bunga masa lalu dan peredaran uang masa lalu memengaruhi harga barang saat ini.
+
+```{r}
+# Menggunakan dataset bawaan M1Germany
+data(M1Germany)
+data.multi <- M1Germany[1:144,]
+```
+
+### B. DLM Berganda
+
+Sama seperti regresi sederhana, kita cari dulu lag optimumnya. Parameter formula sekarang diisi dengan Y \~ X1 + X2.
+
+```{r}
+# Mencari lag optimum DLM untuk regresi berganda
+finiteDLMauto(formula = logprice ~ interest + logm1,
+              data = data.frame(data.multi), q.min = 1, q.max = 5,
+              model.type = "dlm", error.type = "AIC", trace = FALSE)
+```
+
+Fungsi di atas menguji model dari lag 1 hingga 5. R menemukan bahwa model terbaik (AIC terkecil) dicapai saat kita memasukkan rekam jejak data hingga 5 periode ke belakang ($q=5$).
+
+```{r}
+# Pemodelan DLM Berganda dengan q = 5
+model.dlm.multi <- dlm(formula = logprice ~ interest + logm1,
+                       data = data.frame(data.multi), q = 5)
+summary(model.dlm.multi)
+```
+
+**Insight:** Berdasarkan *output summary* di atas, perhatikan kolom `Pr(>|t|)` untuk melihat variabel mana saja yang berpengaruh signifikan terhadap indeks harga (inflasi) pada taraf nyata 5%:
+
+1\. **Suku Bunga (`interest`):** Suku bunga saat ini (`interest.t`) dan suku bunga 5 periode ke belakang (`interest.5`) memiliki *P-value* \< 0.05.
+
+2\. **Suplai Uang (`logm1`):** Suplai uang saat ini (`logm1.t`) dan suplai uang 1 periode ke belakang (`logm1.1`) memiliki *P-value* \< 0.05.
+
+Hal ini membuktikan sebuah **fenomena ekonomi riil yang menarik**: dampak kebijakan moneter terhadap harga barang memiliki pola waktu (*lag*) yang berbeda-beda. Perubahan suplai uang cenderung memberikan efek yang lebih cepat (terasa di periode sekarang dan 1 periode lalu), sementara perubahan suku bunga memiliki efek langsung saat ini sekaligus "memori" jangka panjang yang dampaknya kembali signifikan pada 5 periode setelah kebijakan tersebut dibuat.
+
+### C. ARDL Berganda
+
+Kita juga bisa menerapkan ARDL untuk multivariat. Pencarian kombinasi *lag* optimumnya menggunakan `ardlBoundOrders`.
+
+```{r}
+# Mencari orde lag optimum model ARDL Berganda
+ardlBoundOrders(data = data.multi, formula = logprice ~ interest + logm1, ic="AIC")
+```
+
+(Catatan: R akan menampilkan banyak tabel kombinasi. Kombinasi terbaik didapat pada lag X (p) = 0 dan 4, tapi kita ambil lag paling maksimal dan lag Y (q) = 4).
+
+```{r}
+# Berdasarkan pencarian optimum: 
+# Lag Y (q) = 4, Lag X1 (interest) = 0, Lag X2 (logm1) = 4
+
+# Kita set p = 4 (mengikuti lag maksimal), 
+# lalu kita hapus lag 1 sampai 4 khusus untuk 'interest'
+hapus_lag <- list(interest = c(1, 2, 3, 4))
+aturan_hapus <- list(p = hapus_lag)
+
+# Pemodelan ARDL Berganda
+model.ardl.multi <- ardlDlm(formula = logprice ~ interest + logm1,
+                            data = data.frame(data.multi), 
+                            p = 4 , q = 4 , 
+                            remove = aturan_hapus)
+summary(model.ardl.multi)
+```
+
+**Insight Tambahan:** Pada ARDL berganda, R secara otomatis akan menerapkan panjang *lag* $p=4$ untuk **SEMUA** peubah independen (baik `interest` maupun `logm1` akan dimundurkan sampai 4 periode). Model menjadi jauh lebih kompleks, namun seringkali akurasi peramalannya jauh lebih tajam untuk kasus-kasus ekonomi riil.
+
+### D. Evaluasi Model (Goodness of Fit)
+
+Karena pada studi kasus pengayaan ini kita menggunakan seluruh data observasi tanpa membaginya menjadi data *testing*, kita dapat melihat seberapa baik model ARDL Berganda kita menyesuaikan diri dengan data historisnya menggunakan fungsi `GoF()`.
+
+```{r}
+# Melihat akurasi model pada data training
+GoF(model.ardl.multi)
+```
+
+**Insight:**
+Perhatikan nilai MAPE dari *output* di atas. Nilai MAPE yang kecil (misalnya di bawah 10%) menunjukkan bahwa kombinasi *lag* yang kompleks tadi berhasil merekonstruksi pergerakan inflasi historis di Jerman dengan sangat presisi!
+
+## Tugas Individu
+
+**Instruksi:**
+
+1.  Gunakan dataset kualitas udara pada Google Drive: [[Link GDrive]](https://drive.google.com/drive/folders/18ZcJpGKzmwlw9zxGZjTtVnJV0Ufau23g?usp=drive_link)
+
+2.  Tetapkan AQI sebagai variabel dependen (Y), lalu pilih satu variabel polutan (CO, NO₂, O₃, PM10, PM2.5, atau SO₂) sebagai variabel independen (X).
+
+3.  Terapkan ketiga metode regresi dengan peubah lag yang sudah dipelajari (Koyck, DLM, dan ARDL). Tentukan lag optimum untuk masing-masing metode!
+
+4.  Lakukan evaluasi asumsi model dan bandingkan kinerja peramalan menggunakan metrik akurasi (MAPE) serta visualisasi grafik.
+
+5.  *Upload* *dataset* dan tugas per individu ke GitHub pada folder `Pertemuan-3` dengan format HTML bernama: `Tugas-Pertemuan-3.html` dan `.Rmd`.
+
+6.  **Deadline Pengumpulan:** Kamis, 10 September 2026, 23.59 WIB.

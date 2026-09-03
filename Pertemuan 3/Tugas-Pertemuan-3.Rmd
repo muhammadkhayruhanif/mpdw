@@ -1,0 +1,227 @@
+---
+title: "Tugas Individu Praktikum 3 MPDW"
+author: "Muhammad Khayruhanif"
+date: "2026-09-03"
+output:
+  html_document:
+    theme: yeti
+    toc: true
+    toc_float: true
+  word_document: default
+  pdf_document: default
+---
+
+# Tugas Individu
+
+**Instruksi:**
+
+## Input dataset
+
+1.  Gunakan dataset kualitas udara pada Google Drive: [[Link GDrive]](https://drive.google.com/drive/folders/18ZcJpGKzmwlw9zxGZjTtVnJV0Ufau23g?usp=drive_link)
+
+```{r}
+df <- read.csv("C:\\Users\\ASUS\\Downloads\\NewDelhi_Air_quality.csv")
+head(df)
+```
+
+## Menetapkan peubah X dan Y
+
+2.  Tetapkan AQI sebagai variabel dependen (Y), lalu pilih satu variabel polutan (CO, NO₂, O₃, PM10, PM2.5, atau SO₂) sebagai variabel independen (X).
+
+```{r}
+# menggunakan data O3 (X) dan AQI (Y)
+data <- data.frame(
+  X = df$o3,
+  Y = df$AQI
+)
+
+head(data)
+```
+
+```{r}
+n <- nrow(data)
+n_train <- round(0.8 * n)
+
+# 2. Membagi data
+train <- data[1:n_train, ]
+test  <- data[(n_train + 1):n, ]
+
+train.ts <- ts(train)
+test.ts  <- ts(test)
+```
+
+```{r}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+```
+
+## Pemodelan regresi dengan peubah lag
+
+3.  Terapkan ketiga metode regresi dengan peubah lag yang sudah dipelajari (Koyck, DLM, dan ARDL). Tentukan lag optimum untuk masing-masing metode!
+
+### Koyck
+
+#### Pemodelan
+
+```{r}
+model.koyck <- koyckDlm(x = train$X, y = train$Y)
+summary(model.koyck)
+```
+
+$$\hat{Y}=0.26260+0.25823X_t+0.42943Y_{t-1}$$
+
+#### Peramalan
+
+```{r}
+# Meramalkan 14 periode ke depan
+fore.koyck <- forecast(model = model.koyck, x = test$X, h = length(test$Y))
+fore.koyck
+
+# Cek Akurasi (MAPE) pada data testing
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Y)
+cat("MAPE Model Koyck:", mape.koyck, "\n")
+```
+
+### DLM
+
+#### Pemodelan
+
+```{r}
+model.dlm <- dlm(x = train$X, y = train$Y, q = 2)
+summary(model.dlm)
+```
+
+```{r}
+finiteDLMauto(formula = Y ~ X,
+              data = data.frame(train), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+#### Lag optimum DLM
+Lag optimum berada di nilai AIC terkecil yaitu q=10 (24.10757).
+
+```{r}
+# Membangun ulang DLM dengan Lag Optimum (q=10)
+model.dlm.opt <- dlm(x = train$X, y = train$Y, q = 10)
+summary(model.dlm.opt)
+```
+
+#### Peramalan
+
+```{r}
+# Peramalan model DLM Optimum
+fore.dlm.opt <- forecast(model = model.dlm.opt, x = test$X, h = 14)
+mape.dlm.opt <- MAPE(fore.dlm.opt$forecasts, test$Y)
+cat("MAPE Model DLM Optimum:", mape.dlm.opt, "\n")
+```
+
+### ARDL
+
+#### Pemodelan
+
+```{r}
+# Model ARDL dengan lag X = 1 dan lag Y = 1
+model.ardl <- ardlDlm(formula = Y ~ X, data = train, p = 1, q = 1)
+summary(model.ardl)
+```
+
+#### Lag optimum ARDL
+
+```{r}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(train), ic = "AIC", formula = Y ~ X)
+
+# Menarik kombinasi lag dengan AIC terkecil
+min_p <- c()
+for(i in 1:10){
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]])
+}
+q_opt <- which(min_p == min(min_p, na.rm = TRUE))
+p_opt <- which(model.ardl.opt$Stat.table[[q_opt]] == min(model.ardl.opt$Stat.table[[q_opt]], na.rm = TRUE))
+
+data.frame("Lag_Y_opt(q)" = q_opt, "Lag_X_opt(p)" = p_opt, "AIC" = model.ardl.opt$min.Stat)
+```
+
+#### Peramalan
+
+```{r}
+# Peramalan ARDL awal (p=1, q=1)
+fore.ardl <- forecast(model = model.ardl, x = test$X, h = 14)
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Y)
+cat("MAPE Model ARDL (1,1):", mape.ardl, "\n")
+```
+
+## Evaluasi asumsi model dan kinerja peramalan
+
+4.  Lakukan evaluasi asumsi model dan bandingkan kinerja peramalan menggunakan metrik akurasi (MAPE) serta visualisasi grafik.
+
+```{r}
+# Sama dengan DLM (q=1)
+cons_lm1 <- dynlm(Y ~ X + L(X), data = train.ts)
+
+# Setara dengan Model Autoregressive Murni (Hanya melibatkan X dan Yt-1)
+cons_lm2 <- dynlm(Y ~ X + L(Y), data = train.ts)
+
+# Sama dengan ARDL (p=1, q=1)
+cons_lm3 <- dynlm(Y ~ X + L(X) + L(Y), data = train.ts)
+```
+
+### Uji asumsi model
+
+#### 1. Uji Autokorelasi (Durbin-Watson)
+
+H0: Tidak ada autokorelasi
+
+```{r}
+dwtest(cons_lm1)
+```
+
+#### 2. Uji Heteroskedastisitas (Breusch-Pagan)
+
+H0: Ragam sisaan homogen
+
+```{r}
+bptest(cons_lm1)
+```
+
+#### 3. Uji Normalitas (Shapiro-Wilk)
+
+H0: Sisaan berdistribusi normal
+
+```{r}
+shapiro.test(residuals(cons_lm1))
+```
+
+### Akurasi
+
+```{r}
+# Ringkasan Akurasi
+akurasi <- matrix(c(mape.koyck, mape.dlm.opt, mape.ardl))
+row.names(akurasi) <- c("Koyck", "DLM Optimum", "ARDL (1,1)")
+colnames(akurasi) <- c("MAPE")
+print(akurasi)
+```
+
+### Visualisasi aktual VS peramalan
+
+```{r}
+par(mfrow = c(1, 1))
+
+plot(1:nrow(test), test$Y, type = "b", col = "black", lwd = 2,
+     ylab = "Nilai AQI (Y)", xlab = "Periode Ke-", 
+     main = "Perbandingan Model Peramalan AQI New Delhi")
+
+lines(1:nrow(test), fore.koyck$forecasts, col = "red", type = "b", pch = 16)
+lines(1:nrow(test), fore.dlm.opt$forecasts, col = "blue", type = "b", pch = 17)
+lines(1:nrow(test), fore.ardl$forecasts, col = "green", type = "b", pch = 18)
+
+legend("topleft", 
+       legend = c("Aktual", "Koyck", "DLM Optimum", "ARDL Optimum"),
+       col = c("black", "red", "blue", "green"), 
+       lty = 1, pch = c(1, 16, 17, 18), cex = 0.8, inset = 0.02)
+```
+
+5.  *Upload* *dataset* dan tugas per individu ke GitHub pada folder `Pertemuan-3` dengan format HTML bernama: `Tugas-Pertemuan-3.html` dan `.Rmd`.
+
+6.  **Deadline Pengumpulan:** Kamis, 10 September 2026, 23.59 WIB.
