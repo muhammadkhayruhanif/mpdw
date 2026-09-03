@@ -1,0 +1,68 @@
+---
+title: "IPM MPDW"
+author: "Muhammad Khayruhanif"
+date: "2026-09-02"
+output: html_document
+---
+
+```{r}
+library(readxl)
+
+data <- read_xlsx("C:\\Users\\ASUS\\Downloads\\Tugas MPDW Per 2_Pemodelan IPM.xlsx", sheet="kab")
+head(data)
+```
+
+```{r}
+plot(data$Tahun, data$Pelalawan, 
+     type = "l",
+     main = "Plot IPM Kab. Pelalawan Tahun 2012 - 2024", 
+     ylab = "IPM", 
+     xlab = "Tahun", 
+     col = "blue")
+```
+
+## Uji Durbin-Watson
+
+```{r}
+library(lmtest)
+
+model <- lm(Pelalawan ~ Tahun, data = data)
+
+dwtest(model)
+```
+
+DW = 1.1258 mendekati 0 dan p-value = 0.01719 < 0.05 mengindikasikan adanya autokorelasi positif.
+
+## Cochrane-Orcutt
+
+```{r}
+library(prais)
+
+hasil_co <- prais_winsten(Pelalawan ~ Tahun, data = data, index = "Tahun", method = "cochrane-orcutt")
+
+summary(hasil_co)
+```
+
+Metode Cochrane-Orcutt mengatasi autokorelasi melalui pendekatan iteratif hingga mencapai nilai parameter autokorelasi rho yang stabil. Setelah 9 kali iterasi, diperoleh nilai rho = 0.3752 yang berhasil meningkatkan statistik Durbin-Watson secara signifikan dari 1.126 menjadi 1.739, sehingga asumsi bebas autokorelasi terpenuhi dengan R-Square sebesar 99.59.
+
+## Hildret-Lu
+
+```{r}
+rho_grid <- seq(-0.99, 0.99, by = 0.01)
+sse <- sapply(rho_grid, function(r) {
+  y_trans <- data$Pelalawan[-1] - r * data$Pelalawan[-length(data$Pelalawan)]
+  x_trans <- data$Tahun[-1] - r * data$Tahun[-length(data$Tahun)]
+  sum(residuals(lm(y_trans ~ x_trans))^2)
+})
+
+best_rho <- rho_grid[which.min(sse)]
+cat("Nilai Rho Optimal Hildreth-Lu:", best_rho, "\n")
+
+y_hl <- data$Pelalawan[-1] - best_rho * data$Pelalawan[-length(data$Pelalawan)]
+x_hl <- data$Tahun[-1] - best_rho * data$Tahun[-length(data$Tahun)]
+
+model_hl <- lm(y_hl ~ x_hl)
+summary(model_hl)
+```
+
+Metode Hildreth-Lu menyelesaikan autokorelasi menggunakan teknik pemindaian langsung (grid search) untuk menemukan nilai rho dengan jumlah kuadrat sisaan (SSE) terkecil. Berdasarkan pencarian pada rentang -0.99 hingga 0.99, diperoleh nilai rho optimal sebesar 0.33 yang menghasilkan Residual Standard Error lebih rendah (0.2924) dan nilai R-Square sebesar 94.65.
